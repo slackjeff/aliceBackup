@@ -5,10 +5,13 @@
 # LICENSE:  GPLv3
 #
 # ROADMAP
-# () Implement backup restore method with tar + rsync.
+# () Implement backup restore method with tar + rsync + ssh.
 # () Create check for No space left on device.
 # () Create complete log system.
+# () Create FULL Documentation + FULL examples of use.
 #
+# TODO:
+#   * need to improve the sending part via ssh + rsync.
 ##############################################################################
 
 #set -e
@@ -17,20 +20,37 @@
 # Global Vars
 #----------------------------------------------------------------------------#
 
-# PRG Version
-version="0.1"
 # Used to flag backups, example:
 # backup-full-20240205_224113.tar.xz
 date="$(date +"%Y-%m-%d-%H%M%S")"
 
+# Port of ssh Default is 22
+SSH_PORT='22'
+
+# Include here Path of id_rsa
+ID_RSA=''
+
+###########################
+# RSYNC ARGS
+###########################
+RSYNC_CMD="--archive --verbose --human-readable --compress"
+
+
+#----------------------------------------------------------------------------#
+# Don't Edit
+#----------------------------------------------------------------------------#
+
+# PRG Version
+version="0.1"
+
 ##########################################
 # Make a full backup EVERY Sunday = 7    #
+##########################################
 #  1    2    3    4    5    6    7       #
 # Mon  Tue  Wed  Thu  Fri  Sat  Sunday   #
 # Seg  Ter  Qua  Qui  Sex  Sab  Dom      #
 # Lun  Mar  Mié  Jue  Vie  Sab  Dom      #
 ##########################################
-
 dayOfTheWeek=$(date +%u)
 
 # Util for multiple backups in server.
@@ -38,10 +58,6 @@ machineName=$(hostname -s)
 
 # Directory where will backup made in local machine.
 backupDir="/backup"
-
-#----------------------------------------------------------------------------#
-# No Edit
-#----------------------------------------------------------------------------#
 
 # For perfomance.
 export LC_ALL=C
@@ -81,6 +97,13 @@ Options:
 \nUsage Examples:
 $(basename $0) --exclude-this=".local" --exclude-this="/var/log/dir" --source=/home --source=/etc rsync://username@example.com:/backupServer
 "
+    exit 1
+}
+
+DIE()
+{
+    msg="$1"
+    printf -- "$msg\n"
     exit 1
 }
 
@@ -132,7 +155,17 @@ RSYNC_SEND()
     printf "| RSYNC Send to: $host\n"
     printf "#==========================================================#\n"
     cd ${backupDir}
-    rsync -avh --exclude '*.snar' . $sendServer
+    if [ -n "$ID_RSA" ]; then
+        rsync $RSYNC_CMD --exclude '*.snar' . $sendServer -e "ssh -p $SSH_PORT -i $ID_RSA"
+        if [ "$?" -ne 0 ]; then
+            return 1
+        fi
+    else
+        rsync $RSYNC_CMD --exclude '*.snar' . $sendServer -e "ssh -p $SSH_PORT"
+        if [ "$?" -ne 0 ]; then
+            return 1
+        fi
+    fi
 }
 
 # Remove local backups for store only on the server.
@@ -148,11 +181,11 @@ REMOVE_LOCAL_BACKUPS()
 # start over with the full backup.
 ROTATE_DAY()
 {
-    if [ $dayOfTheWeek -eq 7 ]; then
+    if [ "$dayOfTheWeek" -eq 7 ]; then
         printf "\n#==========================================================#\n"
         printf "| Rotate Day!\n"
         printf "\n#==========================================================#\n"
-        cd $backupDir
+        cd "$backupDir"
         rm -v *.snar 2>/dev/nul
     else
         return 0
@@ -164,7 +197,7 @@ ROTATE_DAY()
 #----------------------------------------------------------------------------#
 
 # Loop options and args
-if [ $# -eq 0 ];then
+if [ "$#" -eq 0 ];then
     USAGE
 fi
 
@@ -177,21 +210,46 @@ while [ -n "$1" ]; do
         ;;
         --exclude-this=*)
             excludeCut=$(echo $1 | cut -d= -f2)
-            [ -z $excludeCut ] && USAGE
+            [ -z "$excludeCut" ] && USAGE
             excludes="$excludes --exclude=$excludeCut"
             shift
         ;;
         # Send backup with RSYNC METHOD
         rsync://*)
             rsync=${1##rsync://}
-            [ -z $rsync ] && USAGE
+            [ -z "$rsync" ] && USAGE
             shift
+        ;;
+        --port=*)
+            portCut=$(echo $1 | cut -d= -f2)
+            [ -z "$portCut" ] && USAGE
+            SSH_PORT="$portCut"
+            shift
+        ;;
+        --id-rsa=*)
+            idrsaCut=$(echo $1 | cut -d= -f2)
+            [ -z "$idrsaCut" ] && USAGE
+            ID_RSA="$idrsaCut"
+            if [ ! -f "$ID_RSA" ]; then
+                DIE "--id-rsa='$ID_RSA' NOT FOUND..."
+            fi
+            shift
+        ;;
+        --help)
+            USAGE
         ;;
         *)
             printf -- "$1: Unknown option.\n"
             USAGE
         ;;
     esac
+done
+
+# Let's test if the --source directories exist.
+for check in $sourceDirectory; do
+    if [ ! -d "$check" ]; then
+        DIE "Directory include in --source=$check DON'T EXIST."
+    fi
 done
 
 # Rotate day = 7?
@@ -204,8 +262,13 @@ else
     FULL_BACKUP "$sourceDirectory" "$excludes"
 fi
 
-# Send Server
-RSYNC_SEND "$rsync"
+if [ -n "$rsync" ]; then
+    # Send Server
+    RSYNC_SEND "$rsync" || DIE "Error. Aborting backup."
+else
+    printf "\nBackup was not SENT TO SERVER!"
+    DIE "\nBackup was not SENT TO SERVER\nYou need to pass an argument to rsync! Example: rsync://root@192.168.30.28:/backupServer.\n"
+fi
 
 # Keep only headers .snar for next control.
 REMOVE_LOCAL_BACKUPS
