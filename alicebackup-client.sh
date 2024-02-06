@@ -6,6 +6,8 @@
 #
 # TODO:
 #   * need to improve the sending part via ssh + rsync.
+#   * Improve part about deleting files on the remote server every X days.
+#     Standard 15 days. It does not need to be run every time each backup.
 ##############################################################################
 
 #set -e
@@ -21,21 +23,26 @@ date="$(date +"%Y-%m-%d-%H%M%S")"
 # Port of ssh Default is 22
 SSH_PORT='22'
 
+SSH_SERVER="192.168.30.28"
+
 # Include here Path of id_rsa
 ID_RSA=''
+
+# Delete backups older than X days
+# DEFAULT IS 15 DAYS
+deleteOlderBackups='15'
 
 ###########################
 # RSYNC ARGS
 ###########################
 RSYNC_CMD="--archive --verbose --human-readable --compress"
 
-
 #----------------------------------------------------------------------------#
 # Don't Edit
 #----------------------------------------------------------------------------#
 
 # PRG Version
-version="0.1"
+version="0.2"
 
 ##########################################
 # Make a full backup EVERY Sunday = 7    #
@@ -52,6 +59,9 @@ machineName=$(hostname -s)
 
 # Directory where will backup made in local machine.
 backupDir="/backup"
+
+# Remote dir storage ALL backups
+backupRemoteDir="/backup-storage"
 
 # For perfomance.
 export LC_ALL=C
@@ -87,9 +97,8 @@ Options:
 \t--source=/dir/for/create/backup/
 \t--exclude-this=/exclude/file/or/directory/
 \t--html-log
-\trsync://USER@example.com:/backupServer
+\trsync://USER@example.com
 \nUsage Examples:
-$(basename $0) --exclude-this=".local" --exclude-this="/var/log/dir" --source=/home --source=/etc rsync://username@example.com:/backupServer
 "
     exit 1
 }
@@ -110,7 +119,6 @@ FULL_BACKUP()
     printf "| BACKUP FULL\n"
     printf "#==========================================================#\n"
     tar \
-    --verbose \
     $exclude \
     --create \
     --file=${backupDir}/backup-full-$machineName-$date.tar.gz \
@@ -123,7 +131,7 @@ DIFFERENTIAL_BACKUP()
 {
     sourceDirectory="$1"
     exclude="$2"
-    printf "#==========================================================#\n"
+    printf "\n#==========================================================#\n"
     printf "| BACKUP DIFFERENTIAL\n"
     printf "#==========================================================#\n"
     # Need count to increment .snar and not overwrite full backup .snar
@@ -132,7 +140,6 @@ DIFFERENTIAL_BACKUP()
     cp ${backupDir}/backup-full-$machineName.snar \
     ${backupDir}/backup-diff-$machineName-${count}.snar
     tar      \
-    --verbose \
     $exclude \
     --create \
     --file=${backupDir}/backup-diff-$machineName-$date.tar.gz \
@@ -145,17 +152,18 @@ DIFFERENTIAL_BACKUP()
 RSYNC_SEND()
 {
     sendServer="$1"
+    remoteDirectory="$2"
     printf "\n#==========================================================#\n"
     printf "| RSYNC Send to: $host\n"
     printf "#==========================================================#\n"
     cd ${backupDir}
-    if [ -n "$ID_RSA" ]; then
-        rsync $RSYNC_CMD --exclude '*.snar' . $sendServer -e "ssh -p $SSH_PORT -i $ID_RSA"
+    if [ -n "$ID_RSA" ] && [ -n "$SSH_PORT" ]; then
+        rsync $RSYNC_CMD --exclude '*.snar' . ${sendServer}:${remoteDirectory} -e "ssh -p $SSH_PORT -i $ID_RSA"
         if [ "$?" -ne 0 ]; then
             return 1
         fi
     else
-        rsync $RSYNC_CMD --exclude '*.snar' . $sendServer -e "ssh -p $SSH_PORT"
+        rsync $RSYNC_CMD --exclude '*.snar' . ${sendServer}:${remoteDirectory} -e "ssh -p $SSH_PORT"
         if [ "$?" -ne 0 ]; then
             return 1
         fi
@@ -186,6 +194,16 @@ ROTATE_DAY()
     fi
 }
 
+# Delete old backup remote server...
+DELETE_OLD_BACKUP_REMOTE_SERVER()
+{
+    printf "\n#==========================================================#\n"
+    printf "# DELETE BACKUPS MORE THAN: ${deleteOlderBackups} Days"
+    printf "\n#==========================================================#\n"
+    ssh -p "$SSH_PORT" "${userAndHost}" -i "$ID_RSA" \
+    "find \"$backupRemoteDir\" -type f -mtime +\"$deleteOlderBackups\" -exec rm -v {} +"
+}
+
 #----------------------------------------------------------------------------#
 # MAIN
 #----------------------------------------------------------------------------#
@@ -208,10 +226,26 @@ while [ -n "$1" ]; do
             excludes="$excludes --exclude=$excludeCut"
             shift
         ;;
+        --delete-backups-more-than=*)
+            deleteOlderBackups=$(echo $1 | cut -d= -f2)
+            if [ -z "$deleteOlderBackups" ]; then
+                DIE "You need to pass a value to know backups longer than how many days I should delete.\n Example: --delete-backups-more-than=10"
+            fi
+            shift
+        ;;
         # Send backup with RSYNC METHOD
         rsync://*)
-            rsync=${1##rsync://}
-            [ -z "$rsync" ] && USAGE
+            userAndHost=${1##rsync://} # Remove rsync://
+            # Remove directory if user enter user@example:/directory
+            # and keep only user@example
+            userAndHost=${userAndHost%%:*}
+            [ -z "$userAndHost" ] && USAGE
+            shift
+        ;;
+        --remote-dir=*)
+            remoteDirCut=$(echo $1 | cut -d= -f2)
+            [ -z $remoteDirCut ] && USAGE
+            backupRemoteDir="$remoteDirCut"
             shift
         ;;
         --port=*)
@@ -246,6 +280,17 @@ for check in $sourceDirectory; do
     fi
 done
 
+# Test ssh connection without remote dir :/
+printf "\nTest Connection: "
+if ! ssh -q $(echo ${userAndHost%:/*}) "exit"; then
+    DIE "[${userAndHost%:/*} its correct? (No route to host).]"
+fi
+printf "[OK]\n"
+
+################################
+## OK, START BACKUP.
+################################
+
 # Rotate day = 7?
 ROTATE_DAY
 
@@ -256,13 +301,17 @@ else
     FULL_BACKUP "$sourceDirectory" "$excludes"
 fi
 
-if [ -n "$rsync" ]; then
+if [ -n "$userAndHost" ]; then
     # Send Server
-    RSYNC_SEND "$rsync" || DIE "Error. Aborting backup."
+    RSYNC_SEND "$userAndHost" "$backupRemoteDir" || DIE "Error. Aborting backup."
 else
     printf "\nBackup was not SENT TO SERVER!"
-    DIE "\nBackup was not SENT TO SERVER\nYou need to pass an argument to rsync! Example: rsync://root@192.168.30.28:/backupServer.\n"
+    DIE "\nBackup was not SENT TO SERVER\nYou need to pass an argument to rsync! Example: rsync://root@192.168.30.28 .\n"
 fi
 
 # Keep only headers .snar for next control.
 REMOVE_LOCAL_BACKUPS
+
+if [ -n "$deleteOlderBackups" ]; then
+    DELETE_OLD_BACKUP_REMOTE_SERVER
+fi
