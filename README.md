@@ -11,11 +11,9 @@ rsync://User@example.com:/DirectoryBackupServer
 --help
 ```
 
-<<<<<<< HEAD
 ```
 ## ROADMAP alicebackup-client.sh
 ```
->>>>>>> main
 -[ ] (Implement backup restore method with tar + rsync + ssh.)
 -[ ] (Implement Criptography with gpg key)
 -[ ] (Create check for No space left on device.)
