@@ -4,12 +4,6 @@
 # AUTHOR  : Jefferson 'Slackjeff' Carneiro <slackjeff@riseup.net>
 # LICENSE:  GPLv3
 #
-# ROADMAP
-# () Implement backup restore method with tar + rsync + ssh.
-# () Create check for No space left on device.
-# () Create complete log system.
-# () Create FULL Documentation + FULL examples of use.
-#
 # TODO:
 #   * need to improve the sending part via ssh + rsync.
 ##############################################################################
