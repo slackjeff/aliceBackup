@@ -11,7 +11,7 @@
 #----------------------------------------------------------------------------#
 
 # PRG Version
-version="0.2"
+version="0.3"
 
 # Used to flag backups, example:
 # backup-full-20240205_224113.tar.xz
@@ -41,6 +41,13 @@ export LC_ALL=C
 export LANG=C
 
 #----------------------------------------------------------------------------#
+# Load Conf
+#----------------------------------------------------------------------------#
+
+# Load local machine configure
+. "${aliceConfigureDir}/$aliceConfigureFile"
+
+#----------------------------------------------------------------------------#
 # Tests
 #----------------------------------------------------------------------------#
 
@@ -52,18 +59,20 @@ export LANG=C
 
 [ ! -d "$aliceConfigureDir" ] && mkdir -pv "$aliceConfigureDir"
 
+# Create config file
 if [ ! -f "${aliceConfigureDir}/$aliceConfigureFile" ]; then
     cat <<EOF > "${aliceConfigureDir}/$aliceConfigureFile"
 # aliceBackup Machine Local Configure File
 EOF
 fi
 
-#----------------------------------------------------------------------------#
-# Load Conf
-#----------------------------------------------------------------------------#
-
-# Load local machine configure
-. "${aliceConfigureDir}/$aliceConfigureFile"
+# Check deps.
+for dep in 'whiptail' 'rsync' 'ssh' 'tar'; do
+    if ! type "$dep" 1>/dev/null 2>/dev/null; then
+        printf "Need install $dep\n"
+        exit 1
+    fi
+done
 
 #----------------------------------------------------------------------------#
 # Functions
@@ -197,6 +206,13 @@ DELETE_OLD_BACKUP_REMOTE_SERVER()
 CONFIGURE_ME()
 {
     while :; do
+        sshUserConfigureMe=$(whiptail --title "SSH USER" \
+        --inputbox "USER SSH for send Backup to remote server: " 10 70 \
+        3>&1 1>&2 2>&3)
+        exitstatus=$?
+        PRESS_ESCAPE "$exitstatus"
+        sshUserConfigureMe=${sshUserConfigureMe:=root}
+
         sshConfigureMe=$(whiptail --title "SSH SERVER IP/DOMAIN" \
         --inputbox "IP or domain of your SSH server: " 10 70 \
         3>&1 1>&2 2>&3)
@@ -207,6 +223,7 @@ CONFIGURE_ME()
         "PORT of your SSH server: " 10 70 3>&1 1>&2 2>&3)
         exitstatus=$?
         PRESS_ESCAPE "$exitstatus"
+        sshPortConfigureMe=${sshPortConfigureMe:=22}
 
         idRsaConfigureMe=$(whiptail --title "ID RSA" --inputbox \
         "FULL PATH of YOUR ID_RSA.\nExample:\n/home/MyUser/.ssh/computer1.rsa " \
@@ -219,12 +236,14 @@ CONFIGURE_ME()
         "FULL PATH of the location where the backups will be stored on your LOCAL COMPUTER!\n/backup is default." 10 70 3>&1 1>&2 2>&3)
         exitstatus=$?
         PRESS_ESCAPE "$exitstatus"
+        backupLocalDirConfigureMe=${backupLocalDirConfigureMe:=/backup}
 
         backupRemoteDirConfigureMe=$(whiptail --title "REMOTE DIRECTORY TO BACKUP" \
         --inputbox \
         "FULL PATH of the location where the backups will be stored on REMOTE SERVER!\nDefault is /backupServer" 10 70 3>&1 1>&2 2>&3)
         exitstatus=$?
         PRESS_ESCAPE "$exitstatus"
+        backupRemoteDirConfigureMe=${backupRemoteDirConfigureMe:=/backupServer}
 
         if whiptail --title "Correct INFORMATION?" \
         --yesno "All informations correct?\n\n[SSH IP/Domain]: $sshConfigureMe\n[PORT]: $sshPortConfigureMe\n[PATH ID_RSA]: $idRsaConfigureMe\n[LOCAL DIRECTORY BKP]: $backupLocalDirConfigureMe\n[REMOTE DIRECTORY BKP]: $backupRemoteDirConfigureMe" 15 70; then
@@ -233,16 +252,16 @@ CONFIGURE_ME()
             continue
         fi
     done
-    [ -z "$sshPortConfigureMe" ] && sshPortConfigureMe="22"
-    [ -z "$backupLocalDirConfigureMe" ] && backupLocalDirConfigureMe="/backup"
-    [ -z "$backupRemoteDirConfigureMe" ] && backupRemoteDirConfigureMe="/backupServer"
 
+# Send configure file
     cat << EOF >> "${aliceConfigureDir}/$aliceConfigureFile"
 
 #####################################################################
 # SSH CONFIGURE
 #####################################################################
 
+# SSH USER
+SSH_USER="$sshUserConfigureMe"
 # SSH IP/HOST/DOMAIN
 SSH_SERVER="$sshConfigureMe"
 # SSH PORT
@@ -359,9 +378,13 @@ for check in $sourceDirectory; do
     fi
 done
 
+# if user did not use parameter rsync
+[ -z $userAndHost ] && userAndHost="${SSH_USER}@${SSH_SERVER}"
+[ -z $SSH_PORT ] && SSH_PORT="22"
+
 # Test ssh connection without remote dir :/
 printf "\nTest Connection: "
-if ! ssh -q $(echo ${userAndHost%:/*}) "exit"; then
+if ! ssh -q "$(echo ${userAndHost%:/*}) -p $SSH_PORT" "exit"; then
     DIE "[${userAndHost%:/*} its correct? (No route to host).]"
 fi
 printf "[OK]\n"
