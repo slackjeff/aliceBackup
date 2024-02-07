@@ -36,12 +36,6 @@ dayOfTheWeek=$(date +%u)
 # Util for multiple backups in server.
 machineName=$(hostname -s)
 
-# Directory where will backup made in local machine.
-backupLocalDir="/backup"
-
-# Remote dir storage ALL backups
-backupRemoteDir="/backup-storage"
-
 # For perfomance.
 export LC_ALL=C
 export LANG=C
@@ -291,6 +285,9 @@ if [ "$#" -eq 0 ];then
     USAGE
 fi
 
+#####################################################################
+# BIG MENU LOOP
+#####################################################################
 while [ -n "$1" ]; do
     case "$1" in
         --source=*)
@@ -369,20 +366,24 @@ if ! ssh -q $(echo ${userAndHost%:/*}) "exit"; then
 fi
 printf "[OK]\n"
 
-################################
-## OK, START BACKUP.
-################################
+#####################################################################
+# START BACKUP.
+# This part of the code is reserved for testing, create backup,
+# sending the backup to the remote server. Among other things.
+#####################################################################
 
 # Rotate day = 7?
 ROTATE_DAY
 
 # Which backup are we going make?
+# FULL or DIFFERENTIAL...
 if [ -f ${backupLocalDir}/backup-full-${machineName}.snar ]; then
     DIFFERENTIAL_BACKUP "$sourceDirectory" "$excludes"
 else
     FULL_BACKUP "$sourceDirectory" "$excludes"
 fi
 
+# Go and send the backup to the remote server.
 if [ -n "$userAndHost" ]; then
     # Send Server
     RSYNC_SEND "$userAndHost" "$backupRemoteDir" || DIE "Error. Aborting backup."
@@ -391,9 +392,16 @@ else
     DIE "\nBackup was not SENT TO SERVER\nYou need to pass an argument to rsync! Example: rsync://root@192.168.30.28 .\n"
 fi
 
-# Keep only headers .snar for next control.
+# Keep only the .snar HEADERS on the local machine
+# Used to control differential backup
 REMOVE_LOCAL_BACKUPS
 
+# Delete old backups on remote server
+#####################################################################
+# FIXME
+#  On each client running alicebackup this function will be called.
+#  We need to improve this, maybe check it every X amount of time.
+#####################################################################
 if [ -n "$deleteOlderBackups" ]; then
     DELETE_OLD_BACKUP_REMOTE_SERVER
 fi
