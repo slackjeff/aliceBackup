@@ -3,46 +3,25 @@
 # aliceBackup
 # AUTHOR  : Jefferson 'Slackjeff' Carneiro <slackjeff@riseup.net>
 # LICENSE:  GPLv3
-#
-# TODO:
-#   * need to improve the sending part via ssh + rsync.
-#   * Improve part about deleting files on the remote server every X days.
-#     Standard 15 days. It does not need to be run every time each backup.
 ##############################################################################
-
 #set -e
 
 #----------------------------------------------------------------------------#
-# Global Vars
+# Don't Edit, use /etc/alicebackup/alicebackup.conf
 #----------------------------------------------------------------------------#
+
+# PRG Version
+version="0.2"
 
 # Used to flag backups, example:
 # backup-full-20240205_224113.tar.xz
 date="$(date +"%Y-%m-%d-%H%M%S")"
 
-# Port of ssh Default is 22
-SSH_PORT='22'
+# aliceBackup Configure Dir
+aliceConfigureDir="/etc/alicebackup"
 
-SSH_SERVER="192.168.30.28"
-
-# Include here Path of id_rsa
-ID_RSA=''
-
-# Delete backups older than X days
-# DEFAULT IS 15 DAYS
-deleteOlderBackups='15'
-
-###########################
-# RSYNC ARGS
-###########################
-RSYNC_CMD="--archive --verbose --human-readable --compress"
-
-#----------------------------------------------------------------------------#
-# Don't Edit
-#----------------------------------------------------------------------------#
-
-# PRG Version
-version="0.2"
+# aliceBackup Configure File
+aliceConfigureFile="alicebackup.conf"
 
 ##########################################
 # Make a full backup EVERY Sunday = 7    #
@@ -58,7 +37,7 @@ dayOfTheWeek=$(date +%u)
 machineName=$(hostname -s)
 
 # Directory where will backup made in local machine.
-backupDir="/backup"
+backupLocalDir="/backup"
 
 # Remote dir storage ALL backups
 backupRemoteDir="/backup-storage"
@@ -68,21 +47,29 @@ export LC_ALL=C
 export LANG=C
 
 #----------------------------------------------------------------------------#
-# Load Conf
-#----------------------------------------------------------------------------#
-
-#for loadMe in /home/slackjeff/Scripts/aliceBackup/*.conf; do
-#    source $loadMe
-#done
-
-#----------------------------------------------------------------------------#
 # Tests
 #----------------------------------------------------------------------------#
 
 # Root?
 [ $(id -u) -ne 0 ] && { printf "Need root."; exit 1 ;}
+
 # Create local structure.
-[ ! -d $backupDir ] && mkdir -v $backupDir
+[ ! -d "$backupLocalDir" ] && mkdir -v "$backupLocalDir"
+
+[ ! -d "$aliceConfigureDir" ] && mkdir -pv "$aliceConfigureDir"
+
+if [ ! -f "${aliceConfigureDir}/$aliceConfigureFile" ]; then
+    cat <<EOF > "${aliceConfigureDir}/$aliceConfigureFile"
+# aliceBackup Machine Local Configure File
+EOF
+fi
+
+#----------------------------------------------------------------------------#
+# Load Conf
+#----------------------------------------------------------------------------#
+
+# Load local machine configure
+. "${aliceConfigureDir}/$aliceConfigureFile"
 
 #----------------------------------------------------------------------------#
 # Functions
@@ -121,8 +108,8 @@ FULL_BACKUP()
     tar \
     $exclude \
     --create \
-    --file=${backupDir}/backup-full-$machineName-$date.tar.gz \
-    --listed-incremental=${backupDir}/backup-full-$machineName.snar \
+    --file=${backupLocalDir}/backup-full-$machineName-$date.tar.gz \
+    --listed-incremental=${backupLocalDir}/backup-full-$machineName.snar \
     $sourceDirectory
 }
 
@@ -137,13 +124,13 @@ DIFFERENTIAL_BACKUP()
     # Need count to increment .snar and not overwrite full backup .snar
     count=$(ls -1 /backup/backup-diff-*.snar 2>/dev/null | wc -l)
     count=$((count+1))
-    cp ${backupDir}/backup-full-$machineName.snar \
-    ${backupDir}/backup-diff-$machineName-${count}.snar
+    cp ${backupLocalDir}/backup-full-$machineName.snar \
+    ${backupLocalDir}/backup-diff-$machineName-${count}.snar
     tar      \
     $exclude \
     --create \
-    --file=${backupDir}/backup-diff-$machineName-$date.tar.gz \
-    --listed-incremental=${backupDir}/backup-diff-$machineName-${count}.snar     \
+    --file=${backupLocalDir}/backup-diff-$machineName-$date.tar.gz \
+    --listed-incremental=${backupLocalDir}/backup-diff-$machineName-${count}.snar     \
     $sourceDirectory
 }
 
@@ -156,7 +143,7 @@ RSYNC_SEND()
     printf "\n#==========================================================#\n"
     printf "| RSYNC Send to: $host\n"
     printf "#==========================================================#\n"
-    cd ${backupDir}
+    cd ${backupLocalDir}
     if [ -n "$ID_RSA" ] && [ -n "$SSH_PORT" ]; then
         rsync $RSYNC_CMD --exclude '*.snar' . ${sendServer}:${remoteDirectory} -e "ssh -p $SSH_PORT -i $ID_RSA"
         if [ "$?" -ne 0 ]; then
@@ -173,7 +160,7 @@ RSYNC_SEND()
 # Remove local backups for store only on the server.
 REMOVE_LOCAL_BACKUPS()
 {
-    cd ${backupDir}
+    cd ${backupLocalDir}
     printf "\n=======> Remove Local Backup <=======\n"
     rm -v backup-diff-*.tar.gz 2>/dev/null
     rm -v backup-full-*.tar.gz 2>/dev/null
@@ -187,11 +174,20 @@ ROTATE_DAY()
         printf "\n#==========================================================#\n"
         printf "| Rotate Day!\n"
         printf "\n#==========================================================#\n"
-        cd "$backupDir"
+        cd "$backupLocalDir"
         rm -v *.snar 2>/dev/nul
     else
         return 0
     fi
+}
+
+PRESS_ESCAPE()
+{
+    exitstatus="$1"
+    if [ "$exitstatus" -eq 1 ]; then
+        exit
+    fi
+
 }
 
 # Delete old backup remote server...
@@ -203,6 +199,88 @@ DELETE_OLD_BACKUP_REMOTE_SERVER()
     ssh -p "$SSH_PORT" "${userAndHost}" -i "$ID_RSA" \
     "find \"$backupRemoteDir\" -type f -mtime +\"$deleteOlderBackups\" -exec rm -v {} +"
 }
+
+CONFIGURE_ME()
+{
+    while :; do
+        sshConfigureMe=$(whiptail --title "SSH SERVER IP/DOMAIN" \
+        --inputbox "IP or domain of your SSH server: " 10 70 \
+        3>&1 1>&2 2>&3)
+        exitstatus=$?
+        PRESS_ESCAPE "$exitstatus"
+
+        sshPortConfigureMe=$(whiptail --title "SSH PORT" --inputbox \
+        "PORT of your SSH server: " 10 70 3>&1 1>&2 2>&3)
+        exitstatus=$?
+        PRESS_ESCAPE "$exitstatus"
+
+        idRsaConfigureMe=$(whiptail --title "ID RSA" --inputbox \
+        "FULL PATH of YOUR ID_RSA.\nExample:\n/home/MyUser/.ssh/computer1.rsa " \
+        10 70 3>&1 1>&2 2>&3)
+        exitstatus=$?
+        PRESS_ESCAPE "$exitstatus"
+
+        backupLocalDirConfigureMe=$(whiptail --title "LOCAL DIRECTORY TO BACKUP" \
+        --inputbox \
+        "FULL PATH of the location where the backups will be stored on your LOCAL COMPUTER!\n/backup is default." 10 70 3>&1 1>&2 2>&3)
+        exitstatus=$?
+        PRESS_ESCAPE "$exitstatus"
+
+        backupRemoteDirConfigureMe=$(whiptail --title "REMOTE DIRECTORY TO BACKUP" \
+        --inputbox \
+        "FULL PATH of the location where the backups will be stored on REMOTE SERVER!\nDefault is /backupServer" 10 70 3>&1 1>&2 2>&3)
+        exitstatus=$?
+        PRESS_ESCAPE "$exitstatus"
+
+        if whiptail --title "Correct INFORMATION?" \
+        --yesno "All informations correct?\n\n[SSH IP/Domain]: $sshConfigureMe\n[PORT]: $sshPortConfigureMe\n[PATH ID_RSA]: $idRsaConfigureMe\n[LOCAL DIRECTORY BKP]: $backupLocalDirConfigureMe\n[REMOTE DIRECTORY BKP]: $backupRemoteDirConfigureMe" 15 70; then
+            break
+        else
+            continue
+        fi
+    done
+    [ -z "$sshPortConfigureMe" ] && sshPortConfigureMe="22"
+    [ -z "$backupLocalDirConfigureMe" ] && backupLocalDirConfigureMe="/backup"
+    [ -z "$backupRemoteDirConfigureMe" ] && backupRemoteDirConfigureMe="/backupServer"
+
+    cat << EOF >> "${aliceConfigureDir}/$aliceConfigureFile"
+
+#####################################################################
+# SSH CONFIGURE
+#####################################################################
+
+# SSH IP/HOST/DOMAIN
+SSH_SERVER="$sshConfigureMe"
+# SSH PORT
+SSH_PORT="$sshPortConfigureMe"
+# ID RSA LOCAL
+ID_RSA="$idRsaConfigureMe"
+
+#####################################################################
+# DIRECTORY CONFIGURE
+#####################################################################
+
+# Local Machine Directory
+backupLocalDir="$backupLocalDirConfigureMe"
+# Remote Machine/server Directory
+backupRemoteDir="$backupRemoteDirConfigureMe"
+
+#####################################################################
+# OTHERS
+#####################################################################
+
+# Delete backups older than X days. DEFAULT 15 DAYS
+deleteOlderBackups='15'
+
+# RSYNC ARGS
+RSYNC_CMD="--archive --verbose --human-readable --compress"
+
+EOF
+
+    whiptail --title "INFORMATION" --msgbox "If you need to edit any set variables, you can do so in: /etc/alicebackup.conf." 10 70
+    exit
+}
+
 
 #----------------------------------------------------------------------------#
 # MAIN
@@ -263,6 +341,10 @@ while [ -n "$1" ]; do
             fi
             shift
         ;;
+        --configure-me)
+            CONFIGURE_ME
+            shift
+        ;;
         --help)
             USAGE
         ;;
@@ -295,7 +377,7 @@ printf "[OK]\n"
 ROTATE_DAY
 
 # Which backup are we going make?
-if [ -f ${backupDir}/backup-full-${machineName}.snar ]; then
+if [ -f ${backupLocalDir}/backup-full-${machineName}.snar ]; then
     DIFFERENTIAL_BACKUP "$sourceDirectory" "$excludes"
 else
     FULL_BACKUP "$sourceDirectory" "$excludes"
